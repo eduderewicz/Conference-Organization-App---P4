@@ -82,3 +82,6 @@ I implemented session as a child of Conference. All fields are strings except fo
         
 ## Query problem - Sessions before 7 and not workshops
 The problem is this query requires 2 inequality filters on separate properties. Datastore only allows this on the same property. My implementation of the query first queries based on sessions before 7 pm and then builds a list of a sessions that are not workshops and returns this list. 
+
+## websafeConfernceKey
+for API testing purposes: ahpzfnNjYWxhYmxlLWFwcC1sZWFybmluZy1wNHIyCxIHUHJvZmlsZSIVZWR1ZGVyZXdpY3pAZ21haWwuY29tDAsSCkNvbmZlcmVuY2UYAQw
