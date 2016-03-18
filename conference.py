@@ -54,6 +54,7 @@ MEMCACHE_ANNOUNCEMENTS_KEY = "RECENT_ANNOUNCEMENTS"
 MEMCACHE_FEATURED_SPEAKER_KEY = "FEATURED_SPEAKER"
 ANNOUNCEMENT_TPL = ('Last chance to attend! The following conferences '
                     'are nearly sold out: %s')
+speaker_sessions = []
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 DEFAULTS = {
@@ -117,6 +118,11 @@ WISHLIST_POST_REQUEST = endpoints.ResourceContainer(
 WISHLIST_DELETE_REQUEST = endpoints.ResourceContainer(
     message_types.VoidMessage,
     websafeSessionKey = messages.StringField(1),
+)
+
+SPECIFIED_DURATION = endpoints.ResourceContainer(
+    message_types.VoidMessage,
+    duration = messages.IntegerField(1, variant=messages.Variant.INT32),
 )
 """WISHLIST_GET_REQUEST = endpoints.ResourceContainer(
     message_types.VoidMessage,
@@ -398,7 +404,7 @@ class ConferenceApi(remote.Service):
         print data['duration']
 
         if data['startTime']:
-            data['startTime'] = datetime.strptime(data['startTime'], '%H:%M:%S').time()
+            data['startTime'] = datetime.strptime(data['startTime'], '%H:%M').time()
         if data['date']:
             data['date'] = datetime.strptime(data['date'], '%Y-%m-%d').date()
 
@@ -406,15 +412,18 @@ class ConferenceApi(remote.Service):
             data['typeOfSession'] = str(TypeOfSession.NOT_SPECIFIED)
         
         speaker = data['speaker']
-        #speaker_sessions = 
-        taskqueue.add(
-            params={'websafeConferenceKey': request.websafeConferenceKey,
-                    'speaker': speaker},
-            url='/tasks/set_featured_speaker')
+        
+        sessions = Session.query(Session.speaker == speaker).fetch()
+
+        if len(sessions) > 1:
+            taskqueue.add(
+                params={'websafeConferenceKey': request.websafeConferenceKey,
+                        'speaker': speaker},
+                url='/tasks/set_featured_speaker')
 
         data['websafeConferenceKey'] = request.websafeConferenceKey
 
-        speaker_name = data['speaker']
+        #speaker_name = data['speaker']
         
         Session(**data).put()
         return request
@@ -425,10 +434,13 @@ class ConferenceApi(remote.Service):
 
         sessions = Session.query(Session.websafeConferenceKey == websafeConferenceKey)
         sessions = Session.query(Session.speaker == speaker).fetch()
+        speaker_sessions.append(speaker)
+        for session in sessions:
+            speaker_sessions.append(session.name)
+        
+        #http://www.decalage.info/en/python/print_list 
+        memcache.set(MEMCACHE_FEATURED_SPEAKER_KEY, ', '.join(map(str, speaker_sessions)))
 
-        if len(sessions) > 1:
-            featured = speaker
-            memcache.set(MEMCACHE_FEATURED_SPEAKER_KEY, featured)
 
 
 
@@ -441,7 +453,7 @@ class ConferenceApi(remote.Service):
         featured = memcache.get(MEMCACHE_FEATURED_SPEAKER_KEY)
 
         if not featured:
-            featured = None
+            featured = ""
         return StringMessage(data=featured)
 
 
@@ -474,8 +486,9 @@ class ConferenceApi(remote.Service):
         sf = SessionForm()
         for field in sf.all_fields():
             if hasattr(sess, field.name):
-                #convert all to string
-                setattr(sf,field.name,str(getattr(sess, field.name)))
+                #convert all to string, except duration
+                if field.name != "duration":
+                    setattr(sf,field.name,str(getattr(sess, field.name)))
             elif field.name == "websafeSessionKey":
                 setattr(sf, field.name, sess.key.urlsafe())
         sf.check_initialized()
@@ -554,16 +567,17 @@ class ConferenceApi(remote.Service):
         if not user:
             raise endpoints.UnauthorizedException('Authorization is requied')
         userProfile = self._getProfileFromUser()
-
+       
         #get users wishlist
         sessions = userProfile.sessionsWishlist
 
+
         return SessionForms(
-            items=[self._copySessionToForm(ndb.key(session).get()) for session in sessions]
+            items=[self._copySessionToForm(ndb.Key(urlsafe=session).get()) for session in sessions]
         
         )
 
-    @endpoints.method(WISHLIST_DELETE_REQUEST,message_types.VoidMessage,
+    @endpoints.method(WISHLIST_DELETE_REQUEST,StringMessage,
         path='profile/deleteFromWishlist',
         http_method = 'DELETE', name='deleteSessionInWishlist')
     def deleteSessionInWishlist(self,request):
@@ -578,30 +592,39 @@ class ConferenceApi(remote.Service):
 
         sessionToRemove = request.websafeSessionKey
 
+        message = StringMessage(data="session does not exist")
         #if session is in wish list, remove it
         if sessionToRemove in userProfile.sessionsWishlist:
             userProfile.sessionsWishlist.remove(sessionToRemove)
             userProfile.put()
+            message = StringMessage(data="Session removed")
                      
-        return message_types.VoidMessage()
+        return message
 
     #Evan's 1st additional query
     """The purpose of this query is to find sessions less than 60 minutes for people who
     have limited time to attend sessions"""
-    @endpoints.method(message_types.VoidMessage, SessionForms,
-        path='sessionsDuration/lessthan60',
-        http_method='GET', name="sessionsDurationLessThan60")
-    def sessionsDurationLessThan60(self,request):
-        """return sessions less than 60 mins"""
+    @endpoints.method(SPECIFIED_DURATION, SessionForms,
+        path='sessionsDuration/lessthanspecified',
+        http_method='GET', name="sessionsDurationLessThanSpecified")
+    def sessionsDurationLessThanSpecified(self,request):
+        """return sessions less than mins specified by user"""
         user = endpoints.get_current_user()
         if not user:
             raise endpoints.UnauthorizedException('Authorization is requied')
 
-        sessions = Session.query(Session.duration <= "60")
+        
+        print request.duration
+        sessions = Session.query()
 
+        #filter unspecified durations
+        sessions = sessions.filter(Session.duration != None)
+        sessions = sessions.filter(Session.duration < request.duration)
+        
         return SessionForms(
             items=[self._copySessionToForm(session) for session in sessions]
         )
+
     #Evan's 2nd additional query
     """The purpose of this query is to return sessions with specified types"""
     @endpoints.method(message_types.VoidMessage, SessionForms,
@@ -655,6 +678,23 @@ class ConferenceApi(remote.Service):
         for session in sessions:
             wssk = session.key.urlsafe()
             session.websafeSessionKey = wssk
+            session.put()
+
+        
+        return message_types.VoidMessage()
+
+    #api helper function to update duration types 
+    @endpoints.method(message_types.VoidMessage, message_types.VoidMessage,
+            path='conference/session/create/updatesessionduration',
+            http_method = 'POST', name='updateSessionDuration')
+    def updateSessionDuration(self,request):
+        """used to update session duration for all sessions"""
+        sessions = Session.query()
+        for session in sessions:
+            if session.duration == (None or '0'):
+                session.duration = 0
+            else: 
+                session.duration = int(session.duration)
             session.put()
 
         
