@@ -40,28 +40,35 @@ API explorer: https://scalable-app-learning-p4.appspot.com/_ah/api/explorer
 I implemented session as a child of Conference. All fields are strings except for date and time. Speaker is a string field, however this design choice would force more logic in the rest of the app or on the end user to deal with and maintain consistency. E.g. speaker name: Chad and chad could be treated as different speakers even though they are one person. One alternative could have been to make the speaker field an instance of the profile class. Ultimately I went with my design selection due to the complexity of this project. 
 
 ## Queries
-1st query: returns sessions less than 60 minutes. Ideal for people on tight schedules or who need to jump around the conference. This helps them find shorter sessions. 
+1st query: returns sessions less than user specified minutes. One possible enhancement to this query woule be to allow users to require a minimum time (example the app currently accepts 0 minute durations)
 
 2nd query: returns sessions with a specified type. This for attendees who want to select sessions based on indicated type. Some attendees may desire only sessions with a type they are interested in 
 
 
-## Evan's 1st additional query
-    """The purpose of this query is to find sessions less than 60 minutes for people who
+##Evan's 1st additional query
+    """The purpose of this query is to find sessions less than user specified minutes for people who
     have limited time to attend sessions"""
-    @endpoints.method(message_types.VoidMessage, SessionForms,
-        path='sessionsDuration/lessthan60',
-        http_method='GET', name="sessionsDurationLessThan60")
-    def sessionsDurationLessThan60(self,request):
-        """return sessions less than 60 mins"""
+    @endpoints.method(SPECIFIED_DURATION, SessionForms,
+        path='sessionsDuration/lessthanspecified',
+        http_method='GET', name="sessionsDurationLessThanSpecified")
+    def sessionsDurationLessThanSpecified(self,request):
+        """return sessions less than mins specified by user"""
         user = endpoints.get_current_user()
         if not user:
             raise endpoints.UnauthorizedException('Authorization is requied')
 
-        sessions = Session.query(Session.duration <= "60")
+        
+        print request.duration
+        sessions = Session.query()
 
+        #filter unspecified durations
+        sessions = sessions.filter(Session.duration != None)
+        sessions = sessions.filter(Session.duration < request.duration)
+        
         return SessionForms(
             items=[self._copySessionToForm(session) for session in sessions]
         )
+        
 ## Evan's 2nd additional query
     """The purpose of this query is to return sessions with specified types"""
     @endpoints.method(message_types.VoidMessage, SessionForms,
